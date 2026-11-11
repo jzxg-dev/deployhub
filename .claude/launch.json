@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "deployhub",
+      "runtimeExecutable": "./bin/deployhub",
+      "runtimeArgs": ["-no-browser", "-no-keychain", "-data", ".deployhub-dev"],
+      "port": 7788
+    },
+    {
+      "name": "deployhub-fakecf",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "CLOUDFLARE_API_BASE_URL=http://127.0.0.1:8787/client/v4 exec ./bin/deployhub -no-browser -no-keychain -data .deployhub-dev"],
+      "port": 7788
+    },
+    {
+      "name": "fakecf",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./internal/cloudflare/cftest/fakecf", "-addr", "127.0.0.1:8787"],
+      "port": 8787
+    }
+  ]
+}

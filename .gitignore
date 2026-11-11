@@ -1,0 +1,15 @@
+# 构建产物
+/bin/
+/web/dist/*
+!/web/dist/.gitkeep
+/web/node_modules/
+/web/*.tsbuildinfo
+
+# 本地运行数据（默认在 ~/.deployhub，这里防止误放进仓库）
+/.deployhub/
+*.db
+*.db-shm
+*.db-wal
+
+.DS_Store
+/.deployhub-dev/

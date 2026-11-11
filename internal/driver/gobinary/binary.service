@@ -1,0 +1,17 @@
+[Unit]
+Description={service}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={user}
+WorkingDirectory={working_dir}
+ExecStart={exec_start}
+{environment}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
