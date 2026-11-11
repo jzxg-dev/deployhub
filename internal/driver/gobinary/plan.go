@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"deployhub/internal/driver"
@@ -16,11 +17,13 @@ type Config struct {
 	CGO                                        bool
 	LDFlagsX                                   []driver.KV
 	BuildCommand, ArtifactPath                 string
-	RemoteDir, WorkingDir                      string
-	Service, ServiceUser, Args, Restart        string
-	Env                                        []driver.KV
-	TemplateMode, Template                     string
-	KeepReleases                               int
+	// Builder 是编译环境（BuilderLocal / BuilderDocker）；GoImage 是在容器里编译时用的镜像。
+	Builder, GoImage                    string
+	RemoteDir, WorkingDir               string
+	Service, ServiceUser, Args, Restart string
+	Env                                 []driver.KV
+	TemplateMode, Template              string
+	KeepReleases                        int
 }
 
 // Resolve 换算出实际配置。
@@ -43,6 +46,15 @@ func (d Driver) Resolve(c *driver.PlanContext) (*Config, *driver.Resolver) {
 	if cfg.GOARCH == "" {
 		cfg.GOARCH = r.Value("goarch", "默认", "amd64")
 		r.Warn("服务器还没检测过架构，按 amd64 编译；在「服务器」页测试连接后会自动按检测结果编译")
+	}
+	cfg.Builder = BuilderLocal
+	if c.Str("builder") == BuilderDocker && cfg.BuildCommand == "" {
+		cfg.Builder = BuilderDocker
+		cfg.GoImage = r.Value("go_image", "go.mod", goImageFromMod(c.Repo.Path))
+		if cfg.GoImage == "" {
+			cfg.GoImage = r.Value("go_image", "默认", "golang:latest")
+			r.Warn("仓库的 go.mod 里读不到 Go 版本，按 golang:latest 编译；建议在「Go 镜像」里写明版本")
+		}
 	}
 	cfg.BinaryName = r.Value("binary_name", "默认", c.App)
 	cfg.RemoteDir = r.Value("remote_dir", "默认", fmt.Sprintf("/opt/%s/%s", c.Project, c.App))
@@ -90,28 +102,94 @@ func (cfg *Config) RenderService() string {
 	).Replace(tpl)
 }
 
-// BuildCommandLine 返回本地编译命令（在仓库目录执行），out 是产物路径。
-func (cfg *Config) BuildCommandLine(out string) string {
-	if cfg.BuildCommand != "" {
-		return cfg.BuildCommand
-	}
+// goBuild 返回 go build 的环境变量和参数，out 是产物路径，value 用来替换版本注入里的占位符（可以为 nil）。
+func (cfg *Config) goBuild(out string, value func(string) string) (env, args []string) {
 	ld := []string{"-s", "-w"}
 	for _, kv := range cfg.LDFlagsX {
-		ld = append(ld, fmt.Sprintf("-X %s=%s", kv.Key, kv.Value))
+		v := kv.Value
+		if value != nil {
+			v = value(v)
+		}
+		ld = append(ld, "-X", kv.Key+"="+v)
 	}
+	args = []string{"build", "-trimpath", "-ldflags=" + strings.Join(ld, " ")}
+	args = append(args, strings.Fields(cfg.BuildFlags)...)
+	args = append(args, "-o", out, cfg.Main)
 	cgo := "0"
 	if cfg.CGO {
 		cgo = "1"
 	}
-	parts := []string{
-		fmt.Sprintf("CGO_ENABLED=%s GOOS=%s GOARCH=%s go build -trimpath", cgo, cfg.GOOS, cfg.GOARCH),
-		"-ldflags=" + driver.Q(strings.Join(ld, " ")),
+	return []string{"CGO_ENABLED=" + cgo, "GOOS=" + cfg.GOOS, "GOARCH=" + cfg.GOARCH}, args
+}
+
+// 容器里的路径：仓库（只读）、产物目录、依赖缓存、编译缓存。
+const (
+	ctrSrc      = "/src"
+	ctrOut      = "/out"
+	ctrModCache = "/go/pkg/mod"
+	ctrGoCache  = "/gocache"
+)
+
+// 本机设置了这些环境变量时带进容器（如国内用的 GOPROXY）。
+var passEnv = []string{"GOPROXY", "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GOSUMDB"}
+
+// dockerBuild 返回在容器里编译的 docker 参数：仓库只读挂载，产物写到 outDir，
+// 依赖和编译缓存放在 cacheDir 下；用当前用户的 uid 运行，产物和缓存不会变成 root 的。
+func (cfg *Config) dockerBuild(repo, outDir, cacheDir string, value func(string) string) []string {
+	env, goArgs := cfg.goBuild(ctrOut+"/"+cfg.BinaryName, value)
+	args := []string{"run", "--rm",
+		"-u", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"-v", repo + ":" + ctrSrc + ":ro", "-w", ctrSrc,
+		"-v", outDir + ":" + ctrOut,
+		"-v", filepath.Join(cacheDir, "gomod") + ":" + ctrModCache,
+		"-v", filepath.Join(cacheDir, "gobuild") + ":" + ctrGoCache,
+		"-e", "HOME=/tmp", "-e", "GOMODCACHE=" + ctrModCache, "-e", "GOCACHE=" + ctrGoCache,
 	}
-	if cfg.BuildFlags != "" {
-		parts = append(parts, cfg.BuildFlags)
+	for _, e := range env {
+		args = append(args, "-e", e)
 	}
-	parts = append(parts, "-o", driver.Q(out), driver.Q(cfg.Main))
-	return strings.Join(parts, " ")
+	for _, name := range passEnv {
+		if os.Getenv(name) != "" {
+			args = append(args, "-e", name)
+		}
+	}
+	args = append(args, cfg.GoImage, "go")
+	return append(args, goArgs...)
+}
+
+// BuildCommandLine 返回本地编译命令（在仓库目录执行），outDir 是产物所在的目录。
+func (cfg *Config) BuildCommandLine(repo, outDir string) string {
+	switch {
+	case cfg.BuildCommand != "":
+		return cfg.BuildCommand
+	case cfg.Builder == BuilderDocker:
+		return "docker " + strings.Join(quoteAll(cfg.dockerBuild(repo, outDir, "<缓存目录>", nil)), " ")
+	}
+	env, args := cfg.goBuild(filepath.Join(outDir, cfg.BinaryName), nil)
+	return "cd " + driver.Q(repo) + " && " + strings.Join(env, " ") + " go " + strings.Join(quoteAll(args), " ")
+}
+
+var (
+	modGoRe        = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+(?:\.\d+)?)\s*$`)
+	modToolchainRe = regexp.MustCompile(`(?m)^toolchain\s+go(\d+\.\d+(?:\.\d+)?)\s*$`)
+)
+
+// goImageFromMod 按仓库 go.mod 的 Go 版本给出镜像（toolchain 行优先），读不到时返回空。
+func goImageFromMod(repo string) string {
+	if repo == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	if m := modToolchainRe.FindSubmatch(data); m != nil {
+		return "golang:" + string(m[1])
+	}
+	if m := modGoRe.FindSubmatch(data); m != nil {
+		return "golang:" + string(m[1])
+	}
+	return ""
 }
 
 // Plan 生成部署计划。
@@ -119,9 +197,13 @@ func (d Driver) Plan(c *driver.PlanContext) *driver.Plan {
 	cfg, r := d.Resolve(c)
 	rel := cfg.RemoteDir + "/releases/" + c.Version
 	local := "<构建目录>/" + cfg.BinaryName
+	repoCmd := cfg.BuildCommandLine(c.Repo.Path, "<构建目录>")
+	if cfg.BuildCommand != "" {
+		repoCmd = "cd " + driver.Q(c.Repo.Path) + " && " + repoCmd
+	}
 	q := driver.Q
 
-	build := []driver.Command{{Where: "local", Command: "cd " + q(c.Repo.Path) + " && " + cfg.BuildCommandLine(local),
+	build := []driver.Command{{Where: "local", Command: repoCmd,
 		Note: "{version} {commit} {app} 和 ${名称} 在执行时替换"}}
 	if cfg.BuildCommand != "" {
 		build = append(build, driver.Command{Where: "local", Command: fmt.Sprintf("cp %s %s", q(filepath.Join(c.Repo.Path, cfg.ArtifactPath)), q(local))})
@@ -169,13 +251,22 @@ func (d Driver) Checks(c *driver.PlanContext) []driver.Check {
 	q := driver.Q
 	var checks []driver.Check
 	if cfg.BuildCommand == "" {
-		checks = append(checks,
-			driver.Check{Group: "本机", Name: "go 命令", Local: func() (bool, string) {
+		if cfg.Builder == BuilderDocker {
+			checks = append(checks, driver.Check{Group: "本机", Name: "Docker（编译用）", Local: func() (bool, string) {
+				if ok, msg := driver.LocalDocker(); !ok {
+					return false, msg
+				}
+				return true, "可用，镜像 " + cfg.GoImage
+			}})
+		} else {
+			checks = append(checks, driver.Check{Group: "本机", Name: "go 命令", Local: func() (bool, string) {
 				if p, err := exec.LookPath("go"); err == nil {
 					return true, p
 				}
 				return false, "本机找不到 go 命令"
-			}},
+			}})
+		}
+		checks = append(checks,
 			driver.Check{Group: "本机", Name: "编译入口 " + cfg.Main, Local: func() (bool, string) {
 				dir := filepath.Join(c.Repo.Path, cfg.Main)
 				if st, err := os.Stat(dir); err == nil && st.IsDir() {

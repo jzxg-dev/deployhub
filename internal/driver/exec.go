@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -212,4 +213,19 @@ cur=$(basename "$(readlink ../current)")
 ls -1t | tail -n +%d | while read -r r; do
   [ "$r" = "$cur" ] || { rm -rf -- "$r" && echo "删除旧版本 $r"; }
 done`, Q(dir), keep+1))
+}
+
+// LocalDocker 检查本机能不能用 Docker：命令在不在、当前用户连不连得上守护进程。
+func LocalDocker() (bool, string) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false, "本机找不到 docker 命令"
+	}
+	out, err := exec.Command("docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput()
+	if err != nil {
+		if strings.Contains(strings.ToLower(string(out)), "permission denied") {
+			return false, "运行 deployhub 的用户没有权限连接 Docker：把它加入 docker 组（sudo usermod -aG docker <用户>），然后重启 deployhub"
+		}
+		return false, "连不上 Docker：确认 Docker 已经启动"
+	}
+	return true, "Docker " + strings.TrimSpace(string(out))
 }

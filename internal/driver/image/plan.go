@@ -173,8 +173,8 @@ func (d Driver) Checks(c *driver.PlanContext) []driver.Check {
 			return false, p + " 不存在"
 		}},
 		{Group: "本机", Name: "docker buildx", Local: func() (bool, string) {
-			if _, err := exec.LookPath("docker"); err != nil {
-				return false, "本机找不到 docker 命令"
+			if ok, msg := driver.LocalDocker(); !ok {
+				return false, msg
 			}
 			if err := exec.Command("docker", "buildx", "version").Run(); err != nil {
 				return false, "docker buildx 不可用"

@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -166,5 +168,64 @@ func TestEveryBuiltinDriverPlans(t *testing.T) {
 		if _, ok := d.(driver.Planner); !ok {
 			t.Errorf("部署方式 %s 没有实现 Planner", s.Name)
 		}
+	}
+}
+
+func TestGoBinaryDockerBuilder(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module demo\n\ngo 1.25.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := gobinary.Driver{}
+	plan := func(extra map[string]any) (*driver.Plan, string) {
+		p := base("api")
+		p["main"] = "./cmd/api"
+		p["builder"] = "docker"
+		p["ldflags_x"] = map[string]any{"main.Version": "{version}"}
+		for k, v := range extra {
+			p[k] = v
+		}
+		c := ctx("api", clean(t, d, p))
+		c.Repo.Path = repo
+		pl := d.Plan(c)
+		return pl, allCommands(pl)
+	}
+
+	// 镜像按 go.mod 的版本取；仓库只读挂载，用当前用户运行，产物写到构建目录
+	_, cmds := plan(nil)
+	for _, want := range []string{
+		"docker run --rm -u ", repo + ":/src:ro", "<构建目录>:/out", "<缓存目录>/gomod:/go/pkg/mod",
+		"-e GOARCH=arm64", "-e CGO_ENABLED=0", " golang:1.25.0 go build -trimpath", "-o /out/api ./cmd/api",
+	} {
+		if !strings.Contains(cmds, want) {
+			t.Errorf("计划里缺少 %q：\n%s", want, cmds)
+		}
+	}
+
+	// toolchain 行优先于 go 行
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module demo\n\ngo 1.25.0\n\ntoolchain go1.25.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, cmds := plan(nil); !strings.Contains(cmds, " golang:1.25.3 go build") {
+		t.Errorf("应该按 toolchain 行取镜像：\n%s", cmds)
+	}
+
+	// 填了镜像就用填的
+	if _, cmds := plan(map[string]any{"go_image": "mirror.example.com/library/golang:1.24"}); !strings.Contains(cmds, " mirror.example.com/library/golang:1.24 go build") {
+		t.Errorf("应该用填写的镜像：\n%s", cmds)
+	}
+
+	// 自定义构建命令优先，不用容器
+	if _, cmds := plan(map[string]any{"build_command": "make build", "artifact_path": "bin/api"}); strings.Contains(cmds, "docker run") {
+		t.Errorf("填了自定义构建命令时不应该用容器编译：\n%s", cmds)
+	}
+
+	// go.mod 读不到版本时退回 latest 并提醒
+	if err := os.Remove(filepath.Join(repo, "go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	pl, cmds := plan(nil)
+	if !strings.Contains(cmds, " golang:latest go build") || !strings.Contains(strings.Join(pl.Warnings, "\n"), "go.mod") {
+		t.Errorf("读不到版本时应该用 golang:latest 并提醒：%v\n%s", pl.Warnings, cmds)
 	}
 }

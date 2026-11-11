@@ -58,19 +58,19 @@ func (d Driver) Build(x *driver.Exec) error {
 		if err := copyFile(filepath.Join(x.C.Repo.Path, cfg.ArtifactPath), out); err != nil {
 			return fmt.Errorf("复制产物 %s：%w", cfg.ArtifactPath, err)
 		}
+	} else if cfg.Builder == BuilderDocker {
+		// 缓存目录要先建好，否则 docker 会用 root 创建，容器里的普通用户写不进去
+		for _, d := range []string{"gomod", "gobuild"} {
+			if err := os.MkdirAll(filepath.Join(x.CacheDir, d), 0o755); err != nil {
+				return fmt.Errorf("创建编译缓存目录：%w", err)
+			}
+		}
+		args := cfg.dockerBuild(x.C.Repo.Path, x.WorkDir, x.CacheDir, placeholders.Replace)
+		if err := x.Local(shell.Cmd{Name: "docker", Args: args, Display: "docker " + strings.Join(quoteAll(args), " ")}); err != nil {
+			return err
+		}
 	} else {
-		ld := []string{"-s", "-w"}
-		for _, kv := range cfg.LDFlagsX {
-			ld = append(ld, "-X", kv.Key+"="+placeholders.Replace(kv.Value))
-		}
-		args := []string{"build", "-trimpath", "-ldflags=" + strings.Join(ld, " ")}
-		args = append(args, strings.Fields(cfg.BuildFlags)...)
-		args = append(args, "-o", out, cfg.Main)
-		cgo := "0"
-		if cfg.CGO {
-			cgo = "1"
-		}
-		env := []string{"CGO_ENABLED=" + cgo, "GOOS=" + cfg.GOOS, "GOARCH=" + cfg.GOARCH}
+		env, args := cfg.goBuild(out, placeholders.Replace)
 		if err := x.Local(shell.Cmd{Name: "go", Args: args, Dir: x.C.Repo.Path, Env: env,
 			Display: strings.Join(env, " ") + " go " + strings.Join(quoteAll(args), " ")}); err != nil {
 			return err

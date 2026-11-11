@@ -14,6 +14,12 @@ import (
 //go:embed binary.service
 var ServiceTemplate string
 
+// 编译环境。
+const (
+	BuilderLocal  = "local"
+	BuilderDocker = "docker"
+)
+
 // Driver 是 Go 服务部署方式。
 type Driver struct{}
 
@@ -23,7 +29,7 @@ func (Driver) Spec() driver.Spec {
 		Name:    "gobinary",
 		Title:   "Go 服务",
 		Summary: "本地交叉编译 Go 程序，上传到服务器，用 systemd 运行",
-		Description: "本地 go build 交叉编译，上传到 <部署目录>/releases/<版本>/，切换 current 软链接后重启 systemd 服务。" +
+		Description: "本地 go build 交叉编译（可以改成在 Docker 容器里编译），上传到 <部署目录>/releases/<版本>/，切换 current 软链接后重启 systemd 服务。" +
 			"服务器上没有这个服务时按模板安装一次（已有的不覆盖）。回滚只需切回旧版本目录并重启，不用重新编译。",
 		Icon:         "server-cog",
 		DefaultCheck: "systemctl is-active <服务名>，服务处于运行状态即通过",
@@ -34,6 +40,22 @@ func (Driver) Spec() driver.Spec {
 				OptionsFrom: "detect:go_mains", AllowCustom: true,
 				Placeholder: "./cmd/open-api",
 				Help:        "仓库里有 main.go 的目录，可以从识别结果中选择或手填",
+			},
+			{
+				Key: "builder", Label: "编译环境", Section: "build", Type: driver.TypeSelect, Default: BuilderLocal,
+				Options: []driver.Option{
+					{Value: BuilderLocal, Label: "本机 Go", Help: "用运行 deployhub 的机器上装的 go 命令编译"},
+					{Value: BuilderDocker, Label: "Docker 容器", Help: "在 Go 官方镜像的容器里编译，机器上只需要 Docker；依赖和编译缓存按应用保留"},
+				},
+				Help: "填了「自定义构建命令」时不起作用",
+			},
+			{
+				Key: "go_image", Label: "Go 镜像", Section: "build", Type: driver.TypeText,
+				DefaultHint: "golang:<go.mod 里的 Go 版本>",
+				Placeholder: "golang:1.25",
+				Pattern:     `^[A-Za-z0-9][A-Za-z0-9._/:@-]*$`, PatternHint: "写成 镜像:标签，如 golang:1.25",
+				Help:   "编译用的镜像，标签决定 Go 的版本；拉取慢时可以填镜像站的地址",
+				ShowIf: &driver.Condition{Key: "builder", In: []string{BuilderDocker}},
 			},
 			{
 				Key: "goos", Label: "目标系统", Section: "build", Type: driver.TypeSelect, Default: "linux",
@@ -49,7 +71,7 @@ func (Driver) Spec() driver.Spec {
 			},
 			{
 				Key: "cgo", Label: "启用 CGO", Section: "build", Type: driver.TypeBool, Default: false,
-				Help: "交叉编译时一般关闭；开启需要本机有目标平台的 C 工具链",
+				Help: "交叉编译时一般关闭；开启需要本机（或 Go 镜像里）有目标平台的 C 工具链",
 			},
 			{
 				Key: "ldflags_x", Label: "版本注入", Section: "build", Type: driver.TypeKeyValue,
