@@ -361,7 +361,8 @@ func (e *Engine) startJob(ctx context.Context, job *model.Job) error {
 	}
 	e.mu.Unlock()
 
-	r := &run{e: e, ctx: runCtx, job: job, repos: map[string]*repoState{}, servers: map[string]*serverState{}}
+	// 执行用任务的副本：返回给调用方的 job 之后不再变（调用方会读它、把它编码成响应），执行过程只改副本
+	r := &run{e: e, ctx: runCtx, job: cloneJob(job), repos: map[string]*repoState{}, servers: map[string]*serverState{}}
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -385,6 +386,17 @@ func (e *Engine) startJob(ctx context.Context, job *model.Job) error {
 		body(r)
 	}()
 	return nil
+}
+
+// cloneJob 复制任务和它的各个应用。
+func cloneJob(j *model.Job) *model.Job {
+	c := *j
+	c.Units = make([]*model.JobUnit, len(j.Units))
+	for i, u := range j.Units {
+		uc := *u
+		c.Units[i] = &uc
+	}
+	return &c
 }
 
 // Cancel 取消任务。已经开始切换版本的应用会把切换和健康检查做完再停。待审批的任务直接撤回。
