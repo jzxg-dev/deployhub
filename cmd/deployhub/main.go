@@ -26,6 +26,7 @@ import (
 
 	"deployhub/internal/api"
 	"deployhub/internal/auth"
+	"deployhub/internal/backup"
 	"deployhub/internal/buildinfo"
 	"deployhub/internal/core"
 	"deployhub/internal/driver/builtin"
@@ -48,6 +49,9 @@ type options struct {
 	noKeychain    bool
 	devUI         string
 	resetPassword string
+	backupDir     string
+	backupKeep    int
+	backupNow     bool
 }
 
 func run() int {
@@ -60,6 +64,9 @@ func run() int {
 	fs.BoolVar(&o.noKeychain, "no-keychain", false, "主密钥不放钥匙串，存在数据目录的 master.key（权限 600）")
 	fs.StringVar(&o.devUI, "dev-ui", "", "前端开发服务器地址，如 http://127.0.0.1:5173；打印的地址指向它，并放行它的 Host 和 Origin")
 	fs.StringVar(&o.resetPassword, "reset-password", "", "给这个用户名换一个随机密码并打印出来，然后退出（忘记密码时用）")
+	fs.StringVar(&o.backupDir, "backup-dir", os.Getenv("DEPLOYHUB_BACKUP_DIR"), "备份目录，默认是数据目录下的 backups（环境变量 DEPLOYHUB_BACKUP_DIR）；想防磁盘损坏就指到别的磁盘或同步盘")
+	fs.IntVar(&o.backupKeep, "backup-keep", 14, "每天自动备份一次，保留最近几份；0 表示不自动备份")
+	fs.BoolVar(&o.backupNow, "backup", false, "立刻备份一次（数据库和主密钥）然后退出；服务正在运行时也可以用")
 	showVersion := fs.Bool("version", false, "显示版本")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "用法：deployhub [选项]\n\n启动部署平台并打开浏览器；已经在运行时只打开浏览器。\n\n选项：\n")
@@ -126,6 +133,22 @@ func serve(o options, logger *slog.Logger) error {
 		return err
 	}
 
+	backupDir := filepath.Join(dataDir, store.BackupDir)
+	if o.backupDir != "" {
+		if backupDir, err = expandHome(o.backupDir); err != nil {
+			return err
+		}
+	}
+	backups := backup.Options{Store: st, Vault: vt, Dir: backupDir, Keep: o.backupKeep}
+	if o.backupNow {
+		path, err := backup.Run(ctx, backups, time.Now())
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "已备份：%s\n主密钥：%s\n恢复时两个文件都要用，见 README「备份和恢复」\n", path, filepath.Join(backupDir, vault.KeyFile))
+		return nil
+	}
+
 	baseURL := "http://" + o.addr
 	var extraOrigins []string
 	if publicURL != "" {
@@ -173,6 +196,12 @@ func serve(o options, logger *slog.Logger) error {
 	go func() { errc <- srv.Serve(ln) }()
 
 	fmt.Fprintf(os.Stderr, "deployhub %s 已启动：%s（监听 %s）\n数据目录：%s\n主密钥：%s\n", buildinfo.Version, baseURL, o.addr, dataDir, keyWhere)
+	if o.backupKeep > 0 {
+		fmt.Fprintf(os.Stderr, "备份：每天自动备份到 %s，保留最近 %d 份\n", backupDir, o.backupKeep)
+		go backup.Loop(ctx, backups, logger)
+	} else {
+		fmt.Fprintln(os.Stderr, "备份：已关闭自动备份（-backup-keep 0），需要时用 deployhub -backup 手动备份")
+	}
 	if strings.HasPrefix(publicURL, "http://") && !isLoopbackURL(publicURL) {
 		fmt.Fprintln(os.Stderr, "注意：对外地址不是 HTTPS，密码和会话会在网络上明文传输。建议在前面放一个带证书的反向代理（Caddy、Nginx），-public-url 填 https:// 地址。")
 	}

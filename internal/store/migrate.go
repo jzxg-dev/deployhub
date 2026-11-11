@@ -51,7 +51,8 @@ func loadMigrations() ([]migration, error) {
 }
 
 // migrate 依次执行还没执行过的迁移，每个迁移在一个事务里完成。
-func migrate(ctx context.Context, db *sql.DB) error {
+// 已经有数据的数据库要升级时，先调用 beforeUpgrade（参数是升级前的版本号）做备份，备份失败就不升级。
+func migrate(ctx context.Context, db *sql.DB, beforeUpgrade func(version int) error) error {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		name       TEXT    NOT NULL,
@@ -91,6 +92,21 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("读取迁移记录：%w", err)
 	}
 
+	current, pending := 0, false
+	for _, m := range list {
+		if applied[m.version] {
+			if m.version > current {
+				current = m.version
+			}
+		} else {
+			pending = true
+		}
+	}
+	if pending && current > 0 && beforeUpgrade != nil {
+		if err := beforeUpgrade(current); err != nil {
+			return fmt.Errorf("升级数据库前备份失败，没有升级：%w", err)
+		}
+	}
 	for _, m := range list {
 		if applied[m.version] {
 			continue

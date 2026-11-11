@@ -55,6 +55,32 @@ func TestUpgradeToAccounts(t *testing.T) {
 	}
 	defer s.Close()
 
+	// 升级前自动留了一份备份：是升级前的样子（还没有账号表），数据都在
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(path), BackupDir, "deployhub-before-upgrade-v4-*.db"))
+	if len(matches) != 1 {
+		t.Fatalf("升级前应自动备份一份：%v", matches)
+	}
+	old, err := sql.Open("sqlite", "file:"+matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := old.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE name = 'shop'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("备份里应有升级前的数据：%d %v", n, err)
+	}
+	if err := old.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n); err == nil {
+		t.Fatal("备份应是升级前的表结构，不该有账号表")
+	}
+	old.Close()
+	// 已经是最新版本时再打开，不再备份
+	s.Close()
+	if s, err = Open(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := filepath.Glob(filepath.Join(filepath.Dir(path), BackupDir, "*.db")); len(again) != 1 {
+		t.Fatalf("没有升级时不应再备份：%v", again)
+	}
+
 	// 不带归属的 Store 和别的账号都看不到，编号 1 的账号全都有
 	for _, owner := range []int64{0, 2} {
 		if list, _ := s.For(owner).ListProjects(ctx); len(list) != 0 {

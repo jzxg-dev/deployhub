@@ -337,6 +337,7 @@ Field{Key: "main", Label: "编译入口", Group: "构建", Type: Select, Require
 - 数据访问都集中在 `store` 层，SQL 尽量写成 SQLite 和 PostgreSQL 都能用的写法；以后使用的人多了再换 PostgreSQL。
 - 服务器、密钥、项目、凭据、任务表都有 `owner_id`（所属账号），名称只在账号内唯一；应用通过项目归属。`store.For(账号)` 返回只读写那个账号数据的 Store，业务层和部署引擎每个账号各一套（`internal/tenant`），账号的目录是 `accounts/<账号编号>/`：`build/` 构建目录、`repos/<项目>/<应用>/` 平台克隆的仓库、`keys/` 私钥临时文件。
 - 密钥的值、应用配置文件内容用 AES-GCM 加密后存库；主密钥存在 macOS 钥匙串，钥匙串不可用时存 `~/.deployhub/master.key`（权限 600）。
+- 备份：数据目录的 `backups/` 下每天一份数据库快照（`VACUUM INTO`）加主密钥，保留最近 14 份；升级表结构前另留一份。恢复步骤见 README。
 - 密钥只通过环境变量传给子进程，不拼进命令参数；日志和页面输出前把已知密钥值替换成 `***`。
 
 ### 技术选型

@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite" // 纯 Go 的 SQLite 驱动，不需要 CGO
@@ -45,11 +47,40 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("打开数据库 %s：%w", path, err)
 	}
-	if err := migrate(ctx, db); err != nil {
+	// 升级表结构前先留一份备份：迁移不能回退，升级后旧版本的程序打不开这个数据库
+	beforeUpgrade := func(version int) error {
+		dest := filepath.Join(filepath.Dir(path), BackupDir, fmt.Sprintf("deployhub-before-upgrade-v%d-%s.db", version, time.Now().Format("20060102-150405")))
+		return backupTo(ctx, db, dest)
+	}
+	if err := migrate(ctx, db, beforeUpgrade); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// BackupDir 是数据目录下默认放备份的子目录。
+const BackupDir = "backups"
+
+// Backup 把整个数据库复制成一个新文件 dest（不能已经存在）。服务运行中也可以做，得到的是一致的快照。
+func (s *Store) Backup(ctx context.Context, dest string) error {
+	return backupTo(ctx, s.db, dest)
+}
+
+func backupTo(ctx context.Context, db *sql.DB, dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return fmt.Errorf("创建备份目录：%w", err)
+	}
+	if _, err := os.Stat(dest); err == nil {
+		return fmt.Errorf("备份文件 %s 已经存在", dest)
+	}
+	// VACUUM INTO 是 SQLite 自带的在线备份方式：读一个一致的快照写成新文件，不影响正在进行的读写
+	if _, err := db.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
+		os.Remove(dest)
+		return fmt.Errorf("备份数据库到 %s：%w", dest, err)
+	}
+	// 数据库里有加密后的密钥和会话，只让自己读
+	return os.Chmod(dest, 0o600)
 }
 
 // Close 关闭数据库。

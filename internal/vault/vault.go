@@ -27,7 +27,12 @@ const (
 // Vault 加密和解密字符串。
 type Vault struct {
 	aead cipher.AEAD
+	key  []byte
 }
+
+// ExportKey 返回主密钥（十六进制），和 master.key 文件的内容一样。只给备份用：
+// 主密钥可能只在钥匙串里，而钥匙串里的条目和数据目录的路径绑定，换机器或换目录就取不到了。
+func (v *Vault) ExportKey() string { return hex.EncodeToString(v.key) }
 
 // New 用给定的 32 字节主密钥创建 Vault。
 func New(key []byte) (*Vault, error) {
@@ -42,7 +47,7 @@ func New(key []byte) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Vault{aead: aead}, nil
+	return &Vault{aead: aead, key: append([]byte(nil), key...)}, nil
 }
 
 // Encrypt 加密，返回 v1:<base64(nonce|密文)>。
