@@ -10,13 +10,13 @@ import (
 	"deployhub/internal/model"
 )
 
-const tokenCols = `t.id, t.name, t.level, t.hint, t.created_at, t.last_used_at`
+const tokenCols = `t.id, t.name, t.level, t.hint, t.created_at, t.last_used_at, t.token_enc <> ''`
 
 func scanToken(row interface{ Scan(...any) error }, extra ...any) (*model.AccessToken, error) {
 	var t model.AccessToken
 	var created int64
 	var used sql.NullInt64
-	dest := append([]any{&t.ID, &t.Name, &t.Level, &t.Hint, &created, &used}, extra...)
+	dest := append([]any{&t.ID, &t.Name, &t.Level, &t.Hint, &created, &used, &t.Revealable}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
@@ -42,11 +42,11 @@ func (s *Store) ListTokens(ctx context.Context) ([]*model.AccessToken, error) {
 	return list, rows.Err()
 }
 
-// CreateToken 新增访问令牌，hash 是令牌的 SHA-256。
-func (s *Store) CreateToken(ctx context.Context, t *model.AccessToken, hash string) error {
+// CreateToken 新增访问令牌，hash 是令牌的 SHA-256（认证时用），enc 是加密后的令牌（页面上再次查看时用）。
+func (s *Store) CreateToken(ctx context.Context, t *model.AccessToken, hash, enc string) error {
 	now := time.Now()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO access_tokens (owner_id, name, level, token_hash, hint, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		s.owner, t.Name, t.Level, hash, t.Hint, now.Unix())
+	res, err := s.db.ExecContext(ctx, `INSERT INTO access_tokens (owner_id, name, level, token_hash, token_enc, hint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		s.owner, t.Name, t.Level, hash, enc, t.Hint, now.Unix())
 	if isUnique(err) {
 		return ErrDuplicate
 	}
@@ -54,8 +54,18 @@ func (s *Store) CreateToken(ctx context.Context, t *model.AccessToken, hash stri
 		return fmt.Errorf("保存访问令牌：%w", err)
 	}
 	t.ID, _ = res.LastInsertId()
-	t.CreatedAt = now
+	t.CreatedAt, t.Revealable = now, enc != ""
 	return nil
+}
+
+// TokenValue 返回加密后的令牌；这一列加上之前创建的令牌返回空字符串。
+func (s *Store) TokenValue(ctx context.Context, name string) (string, error) {
+	var enc string
+	err := s.db.QueryRowContext(ctx, `SELECT token_enc FROM access_tokens WHERE owner_id = ? AND name = ?`, s.owner, name).Scan(&enc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return enc, err
 }
 
 // DeleteToken 吊销（删除）访问令牌，之后它立即不能再用。

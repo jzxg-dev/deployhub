@@ -68,7 +68,8 @@ func (s *server) routes() []route {
 
 		// 访问令牌：只能在页面上管理
 		{"GET", "/api/tokens", page, "访问令牌", "当前账号的访问令牌（不含令牌本身）", s.listTokens, "", nil},
-		{"POST", "/api/tokens", page, "访问令牌", "创建访问令牌，令牌明文只在这次响应里返回", s.createToken, "TokenInput", nil},
+		{"POST", "/api/tokens", page, "访问令牌", "创建访问令牌，响应里带令牌明文", s.createToken, "TokenInput", nil},
+		{"POST", "/api/tokens/{name}/reveal", page, "访问令牌", "读取访问令牌的明文", s.revealToken, "", nil},
 		{"DELETE", "/api/tokens/{name}", page, "访问令牌", "吊销访问令牌", s.revokeToken, "", nil},
 
 		// 部署方式、实时事件、接口文档
@@ -157,7 +158,7 @@ func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, r, http.StatusOK, list, err)
 }
 
-// createToken 创建访问令牌。响应里的 token 是令牌明文，只有这一次。
+// createToken 创建访问令牌。响应里的 token 是令牌明文，之后在页面上还能再查看。
 func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	var in core.TokenInput
 	if !decode(w, r, &in) {
@@ -168,7 +169,12 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"name": t.Name, "level": t.Level, "hint": t.Hint, "createdAt": t.CreatedAt, "token": token})
+	writeJSON(w, http.StatusCreated, map[string]any{"name": t.Name, "level": t.Level, "hint": t.Hint, "createdAt": t.CreatedAt, "revealable": t.Revealable, "token": token})
+}
+
+func (s *server) revealToken(w http.ResponseWriter, r *http.Request) {
+	v, err := s.core(r).RevealToken(r.Context(), r.PathValue("name"))
+	s.respond(w, r, http.StatusOK, map[string]string{"token": v}, err)
 }
 
 func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {

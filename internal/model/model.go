@@ -194,7 +194,7 @@ func LevelRank(level string) int {
 	return 0
 }
 
-// AccessToken 是一个访问令牌，给 AI 和脚本调用 HTTP API、MCP 用。令牌明文只在创建时返回一次。
+// AccessToken 是一个访问令牌，给 AI 和脚本调用 HTTP API、MCP 用。令牌明文不在这里，页面上要看时单独读取。
 type AccessToken struct {
 	ID         int64      `json:"-"`
 	Name       string     `json:"name"`
@@ -202,4 +202,6 @@ type AccessToken struct {
 	Hint       string     `json:"hint"` // 令牌开头的几个字符
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	// Revealable 表示页面上能再次查看令牌；支持查看之前创建的令牌库里只有哈希，是 false
+	Revealable bool `json:"revealable"`
 }

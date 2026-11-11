@@ -145,6 +145,15 @@ func TestAccountsAreIsolated(t *testing.T) {
 		t.Fatalf("alice 的密钥被改了：%s", rec.Body)
 	}
 
+	// 访问令牌：bob 查看不了 alice 的
+	aliceToken := e.newToken(t, alice, "ci", "read")
+	if rec := e.send(t, "POST", "/api/tokens/ci/reveal", ``, bob); rec.Code != 404 {
+		t.Fatalf("查看别人的令牌应 404，实际 %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.send(t, "POST", "/api/tokens/ci/reveal", ``, alice); !strings.Contains(rec.Body.String(), aliceToken) {
+		t.Fatalf("alice 查看自己的令牌：%s", rec.Body)
+	}
+
 	// 导出只有自己的
 	if rec := e.send(t, "POST", "/api/export", `{"sensitive":true}`, bob); rec.Code != 200 || strings.Contains(rec.Body.String(), "alice") {
 		t.Fatalf("bob 的导出里有 alice 的数据：%d %s", rec.Code, rec.Body)

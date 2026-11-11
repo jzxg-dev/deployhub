@@ -99,7 +99,7 @@ export interface Session {
 
 export type TokenLevel = "read" | "deploy" | "admin";
 
-/** 访问令牌：给 AI 和脚本调用 HTTP API、MCP 用。令牌本身只在创建时返回一次。 */
+/** 访问令牌：给 AI 和脚本调用 HTTP API、MCP 用。令牌本身不在列表里，要看时单独读取。 */
 export interface AccessToken {
   name: string;
   level: TokenLevel;
@@ -107,6 +107,8 @@ export interface AccessToken {
   hint: string;
   createdAt: string;
   lastUsedAt?: string;
+  /** 能不能在页面上再次查看；支持查看之前创建的令牌不能 */
+  revealable: boolean;
 }
 
 // ---------- 服务器、密钥、项目、应用（对应 Go 端 internal/model）----------

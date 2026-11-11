@@ -1,5 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Bot, Check, Copy, Download, FileJson, History, KeyRound, Loader2, LogOut, Plus, Trash2, Upload } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bot, Check, Copy, Download, Eye, FileJson, History, KeyRound, Loader2, LogOut, Plus, Trash2, Upload } from "lucide-react";
 import { ConfirmButton } from "@/components/common/ConfirmButton";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -209,7 +209,67 @@ function CopyLine({ text, label }: { text: string; label: string }) {
   );
 }
 
-/** 创建访问令牌；创建后显示令牌和接入命令，关掉就再也看不到令牌了。 */
+/** 令牌本身，加上接入 Claude Code 和脚本的命令，都可以复制。 */
+function TokenUsage({ token }: { token: string }) {
+  const origin = window.location.origin;
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1.5">
+        <p className="text-sm font-medium">令牌</p>
+        <CopyLine text={token} label="令牌" />
+      </div>
+      <div className="space-y-1.5">
+        <p className="text-sm font-medium">接入 Claude Code（MCP）</p>
+        <CopyLine text={`claude mcp add --transport http deployhub ${origin}/mcp --header "Authorization: Bearer ${token}"`} label="接入命令" />
+        <p className="text-xs text-muted-foreground">在终端执行一次，之后直接对 AI 说「把某某应用部署一下」。</p>
+      </div>
+      <div className="space-y-1.5">
+        <p className="text-sm font-medium">脚本里用 HTTP 接口</p>
+        <CopyLine text={`curl -H "Authorization: Bearer ${token}" ${origin}/api/apps`} label="示例命令" />
+      </div>
+    </div>
+  );
+}
+
+/** 再次查看已有的令牌：打开时才向后端要明文，不缓存。 */
+function TokenViewDialog({ token, onClose }: { token: AccessToken; onClose: () => void }) {
+  const { data, error, isPending } = useQuery({
+    queryKey: ["token-value", token.name],
+    queryFn: () => http.post<{ token: string }>(`/api/tokens/${encodeURIComponent(token.name)}/reveal`),
+    enabled: token.revealable,
+    gcTime: 0,
+    staleTime: 0,
+    retry: false,
+  });
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>令牌「{token.name}」</DialogTitle>
+          <DialogDescription>拿到令牌就能以「{levelLabel[token.level] ?? token.level}」权限调用接口，不要发给别人。</DialogDescription>
+        </DialogHeader>
+        {!token.revealable ? (
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            这个令牌是在支持再次查看之前创建的，库里只有它的哈希，查看不了。它还能继续用；需要再次复制的话，吊销它，再建一个新的。
+          </p>
+        ) : data ? (
+          <TokenUsage token={data.token} />
+        ) : error ? (
+          <p className="text-sm text-destructive">{errorMessage(error)}</p>
+        ) : (
+          isPending && <Loader2 className="mx-auto size-5 animate-spin text-muted-foreground" />
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** 创建访问令牌；创建后显示令牌和接入命令，之后在列表里还能再次查看。 */
 function TokenDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
@@ -227,7 +287,6 @@ function TokenDialog({ onClose }: { onClose: () => void }) {
       toast.error(errorMessage(e));
     },
   });
-  const origin = window.location.origin;
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-lg">
@@ -235,25 +294,11 @@ function TokenDialog({ onClose }: { onClose: () => void }) {
           <>
             <DialogHeader>
               <DialogTitle>令牌「{created.name}」已创建</DialogTitle>
-              <DialogDescription>令牌只显示这一次，关掉这个窗口就看不到了。丢了就吊销它，再建一个新的。</DialogDescription>
+              <DialogDescription>之后在令牌列表里点「查看」，还能再次看到并复制它。</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">令牌</p>
-                <CopyLine text={created.token} label="令牌" />
-              </div>
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">接入 Claude Code（MCP）</p>
-                <CopyLine text={`claude mcp add --transport http deployhub ${origin}/mcp --header "Authorization: Bearer ${created.token}"`} label="接入命令" />
-                <p className="text-xs text-muted-foreground">在终端执行一次，之后直接对 AI 说「把某某应用部署一下」。</p>
-              </div>
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">脚本里用 HTTP 接口</p>
-                <CopyLine text={`curl -H "Authorization: Bearer ${created.token}" ${origin}/api/apps`} label="示例命令" />
-              </div>
-            </div>
+            <TokenUsage token={created.token} />
             <DialogFooter>
-              <Button onClick={onClose}>我已经保存好了</Button>
+              <Button onClick={onClose}>完成</Button>
             </DialogFooter>
           </>
         ) : (
@@ -307,6 +352,7 @@ function AccessTokens() {
   const qc = useQueryClient();
   const { data: tokens } = useTokens();
   const [creating, setCreating] = useState(false);
+  const [viewing, setViewing] = useState<AccessToken>();
   return (
     <Card className="gap-4">
       <CardHeader>
@@ -332,6 +378,10 @@ function AccessTokens() {
                     <span className="font-mono">{t.hint}</span> · {timeAgo(t.createdAt)}创建 · {t.lastUsedAt ? `${timeAgo(t.lastUsedAt)}用过` : "还没用过"}
                   </p>
                 </div>
+                <div className="flex shrink-0 items-center gap-1">
+                <Button variant="ghost" size="icon-sm" aria-label={`查看 ${t.name}`} title="查看、复制令牌" onClick={() => setViewing(t)}>
+                  <Eye />
+                </Button>
                 <ConfirmButton
                   trigger={
                     <Button variant="ghost" size="icon-sm" aria-label={`吊销 ${t.name}`}>
@@ -348,6 +398,7 @@ function AccessTokens() {
                     toast.success(`已吊销 ${t.name}`);
                   }}
                 />
+                </div>
               </li>
             ))}
           </ul>
@@ -366,6 +417,7 @@ function AccessTokens() {
         </div>
       </CardContent>
       {creating && <TokenDialog onClose={() => setCreating(false)} />}
+      {viewing && <TokenViewDialog token={viewing} onClose={() => setViewing(undefined)} />}
     </Card>
   );
 }

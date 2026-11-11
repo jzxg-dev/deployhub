@@ -51,7 +51,7 @@ func TestTokenLifecycle(t *testing.T) {
 	if rec := e.send(t, "POST", "/api/tokens", `{"name":"Claude Code","level":"read"}`, c); rec.Code != 422 {
 		t.Fatalf("重名应 422，实际 %d", rec.Code)
 	}
-	// 列表里没有令牌本身，库里也没有明文
+	// 列表里没有令牌本身
 	rec := e.do(t, "GET", "/api/tokens", c)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"Claude Code"`) || strings.Contains(rec.Body.String(), token) {
 		t.Fatalf("令牌列表 = %d %s", rec.Code, rec.Body)
@@ -80,7 +80,18 @@ func TestTokenLifecycle(t *testing.T) {
 		t.Fatalf("没有令牌的非浏览器请求 = %d", rec.Code)
 	}
 
-	// 令牌不能管理令牌
+	// 页面上可以再次查看令牌
+	if rec := e.send(t, "POST", "/api/tokens/Claude%20Code/reveal", ``, c); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"token":"`+token+`"`) {
+		t.Fatalf("查看令牌 = %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.send(t, "POST", "/api/tokens/nope/reveal", ``, c); rec.Code != 404 {
+		t.Fatalf("查看不存在的令牌 = %d", rec.Code)
+	}
+
+	// 令牌不能管理令牌，也不能查看令牌
+	if rec := e.call(t, "POST", "/api/tokens/Claude%20Code/reveal", "", token); rec.Code != 403 || errorCode(rec) != "page_only" {
+		t.Fatalf("令牌查看令牌 = %d %s", rec.Code, rec.Body)
+	}
 	if rec := e.call(t, "GET", "/api/tokens", "", token); rec.Code != 403 || errorCode(rec) != "page_only" {
 		t.Fatalf("令牌读令牌列表 = %d %s", rec.Code, rec.Body)
 	}

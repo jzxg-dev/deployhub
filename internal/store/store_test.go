@@ -3,9 +3,12 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"deployhub/internal/model"
 )
 
 func openTemp(t *testing.T) (*Store, string) {
@@ -125,5 +128,32 @@ func TestLoginTokenExpires(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatal("过期的令牌应该被清理")
+	}
+}
+
+// 库里保存的是加密后的令牌；加这一列之前创建的令牌（只有哈希）取出来是空的。
+func TestTokenValue(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	a, b := s.For(1), s.For(2)
+	tok := &model.AccessToken{Name: "ci", Level: model.LevelRead, Hint: "dh_abcd…"}
+	if err := a.CreateToken(ctx, tok, "hash-new", "v1:enc"); err != nil || !tok.Revealable {
+		t.Fatalf("CreateToken = %v，Revealable = %v", err, tok.Revealable)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO access_tokens (owner_id, name, level, token_hash, hint, created_at) VALUES (1, 'old', 'read', 'hash-old', 'dh_wxyz…', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := a.TokenValue(ctx, "ci"); err != nil || v != "v1:enc" {
+		t.Fatalf("TokenValue = %q, %v", v, err)
+	}
+	if v, err := a.TokenValue(ctx, "old"); err != nil || v != "" {
+		t.Fatalf("旧令牌的 TokenValue = %q, %v", v, err)
+	}
+	if _, err := b.TokenValue(ctx, "ci"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("别的账号读令牌应 ErrNotFound，实际 %v", err)
+	}
+	list, err := a.ListTokens(ctx)
+	if err != nil || len(list) != 2 || !list[0].Revealable || list[1].Revealable {
+		t.Fatalf("ListTokens = %+v, %v", list, err)
 	}
 }
