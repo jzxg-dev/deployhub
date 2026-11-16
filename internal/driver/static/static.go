@@ -52,7 +52,7 @@ func (Driver) Spec() driver.Spec {
 				Key: "index_check_domain", Label: "首页一致性检查", Section: "health", Type: driver.TypeText,
 				Placeholder: "pay.example.com",
 				Pattern:     `^[A-Za-z0-9.-]+$`, PatternHint: "只填域名，不带 https:// 和路径",
-				Help: "填站点域名后，在服务器上通过本机 Nginx 取首页，和 current/index.html 比对，一致才算切换成功",
+				Help: "填站点域名后，在服务器上通过本机 Nginx 取首页，和 current/index.html 比对，再取首页引用的一个 js/css 确认能访问，都通过才算切换成功",
 			},
 		},
 	}

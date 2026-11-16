@@ -37,12 +37,18 @@ func (d Driver) Resolve(c *driver.PlanContext) (*Config, *driver.Resolver) {
 }
 
 // DefaultCheck 返回默认健康检查命令。
+// 填了域名时通过本机 Nginx 取首页和 current/index.html 比对，再取首页引用的第一个 /…js 或 /…css，
+// 确认静态资源也能读到（比如文件权限不对时首页正常、资源 403，只比对首页发现不了）。
 func (cfg *Config) DefaultCheck() string {
+	index := driver.Q(cfg.RemoteDir + "/current/index.html")
 	if cfg.IndexCheckDomain != "" {
-		return fmt.Sprintf("curl -fsS --max-time 5 --resolve %s:443:127.0.0.1 https://%s/index.html | cmp -s - %s",
-			cfg.IndexCheckDomain, cfg.IndexCheckDomain, driver.Q(cfg.RemoteDir+"/current/index.html"))
+		d := cfg.IndexCheckDomain
+		return fmt.Sprintf(`curl -fsS --max-time 5 --resolve %s:443:127.0.0.1 https://%s/index.html | cmp -s - %s && `+
+			`a=$(grep -oE '(src|href)="/[^"]+\.(js|css)"' %s | head -n 1 | cut -d '"' -f 2) && `+
+			`{ [ -z "$a" ] || curl -fsS -o /dev/null --max-time 5 --resolve %s:443:127.0.0.1 "https://%s$a"; }`,
+			d, d, index, index, d, d)
 	}
-	return "test -f " + driver.Q(cfg.RemoteDir+"/current/index.html")
+	return "test -f " + index
 }
 
 // Plan 生成部署计划。
@@ -71,7 +77,7 @@ func (d Driver) Plan(c *driver.PlanContext) *driver.Plan {
 	}
 	build = append(build,
 		driver.Command{Where: "local", Command: "cd <构建副本> && " + strings.Join(env, " ") + " " + cfg.BuildCommand, Note: "${名称} 在执行时替换"},
-		driver.Command{Where: "local", Command: fmt.Sprintf("复制 <构建副本>/%s 到产物目录，跳过 %s；产物里必须有 index.html", cfg.Dist, excl)},
+		driver.Command{Where: "local", Command: fmt.Sprintf("复制 <构建副本>/%s 到产物目录（目录 755、文件 644），跳过 %s；产物里必须有 index.html", cfg.Dist, excl)},
 	)
 
 	prepare := []driver.Command{{Where: "server", Command: fmt.Sprintf("mkdir -p %s && test -w %s", q(cfg.RemoteDir+"/releases"), q(cfg.RemoteDir)),
@@ -82,8 +88,10 @@ func (d Driver) Plan(c *driver.PlanContext) *driver.Plan {
 		{Name: "构建", Commands: build},
 		{Name: "准备服务器", Commands: prepare},
 		{Name: "上传", Commands: []driver.Command{
-			{Where: "server", Command: fmt.Sprintf("mkdir -p %s && cp -al %s/. %s/", q(rel), q(cfg.RemoteDir+"/current"), q(rel)), Note: "以当前版本为底（硬链接，不占空间）"},
-			{Where: "local", Command: fmt.Sprintf("rsync -az --partial --checksum --delete <产物目录>/ %s:%s/", c.Server.Dest, rel), Note: "只传改动的文件；没有 rsync 时改用 scp"},
+			{Where: "server", Command: "mkdir -p " + q(rel)},
+			{Where: "local", Command: fmt.Sprintf("rsync -az --partial --checksum --no-times --delete --link-dest=%s/ <产物目录>/ %s:%s/", cfg.RemoteDir+"/current", c.Server.Dest, rel),
+				Note: "和当前版本相同的文件建硬链接（不占空间、不重传），不改动当前版本；没有 rsync 时改用 scp"},
+			{Where: "server", Command: fmt.Sprintf("chmod -R u+rwX,go+rX %s && test -f %s", q(rel), q(rel+"/index.html")), Note: "新版本所有人可读，Nginx 才能访问"},
 		}},
 		{Name: "切换", Commands: []driver.Command{
 			{Where: "server", Command: fmt.Sprintf("cd %s && test -f releases/%s/index.html && ln -sfn releases/%s current.tmp && mv -T current.tmp current", q(cfg.RemoteDir), c.Version, c.Version),

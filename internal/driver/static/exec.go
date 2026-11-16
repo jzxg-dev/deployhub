@@ -84,6 +84,8 @@ func orNone(list []string) []string {
 }
 
 // copyTree 复制目录，跳过文件名匹配 exclude 的文件，返回文件数和总大小。
+// 目录固定 755、文件固定 644，不随进程的 umask 变：deployhub 作为服务运行时 umask 常是 077，
+// 产物会变成 700/600，上传后 Nginx 读不到。
 func copyTree(src, dst string, exclude []string) (int, int64, error) {
 	var n int
 	var size int64
@@ -94,7 +96,10 @@ func copyTree(src, dst string, exclude []string) (int, int64, error) {
 		rel, _ := filepath.Rel(src, p)
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+			return os.Chmod(target, 0o755)
 		}
 		for _, pat := range exclude {
 			if ok, _ := filepath.Match(pat, d.Name()); ok {
@@ -121,6 +126,10 @@ func copyTree(src, dst string, exclude []string) (int, int64, error) {
 			out.Close()
 			return err
 		}
+		if err := out.Chmod(0o644); err != nil {
+			out.Close()
+			return err
+		}
 		n++
 		size += info.Size()
 		return out.Close()
@@ -128,24 +137,36 @@ func copyTree(src, dst string, exclude []string) (int, int64, error) {
 	return n, size, err
 }
 
-// Upload 上传到 releases/<版本>。有 rsync 时先用硬链接复制当前版本作底（不占空间），再按内容比对同步，只传改动的文件；
-// 没有 rsync 时整个目录用 scp 上传（不以当前版本为底，避免旧文件残留）。
+// Upload 上传到 releases/<版本>。
+//
+// 有 rsync 时用 --link-dest 以当前版本为参照：内容和属性都相同的文件在服务器上建硬链接（不占空间、不重传），
+// 其余的新建文件。不能先 cp -al 复制当前版本再 rsync：内容相同的文件 rsync 只改属性，
+// 而硬链接共用 inode，会把当前和更早版本的同名文件一起改掉（产物权限不对时，线上版本也跟着坏）。
+// --no-times 不同步修改时间，否则每次构建时间不同，没有文件能链接上。
+// 没有 rsync 时整个目录用 scp 上传。
+//
+// 上传后把新版本目录统一设为所有人可读（Nginx 等通常不是部署用户）。不用 rsync --chmod：
+// macOS 自带的 openrsync 接受这个参数但不生效。链接上的文件和当前版本属性相同，chmod 不会改到它。
 func (d Driver) Upload(x *driver.Exec) error {
 	cfg, _ := d.Resolve(x.C)
 	q := driver.Q
 	rel := cfg.RemoteDir + "/releases/" + x.C.Version
+	if err := x.Remote("mkdir -p " + q(rel)); err != nil {
+		return err
+	}
+	var extra []string
 	if x.Rsync {
-		if err := x.Remote(fmt.Sprintf("mkdir -p %s && if [ -d %s ]; then cp -al %s/. %s/; fi",
-			q(rel), q(cfg.RemoteDir+"/current/"), q(cfg.RemoteDir+"/current"), q(rel))); err != nil {
-			return err
+		extra = []string{"--checksum", "--no-times", "--delete"} // --delete：同一版本重传时清掉多余文件
+		// 首次部署没有 current，rsync 会提示参照目录不存在，这里先判断
+		if out, err := x.Query(fmt.Sprintf("[ -d %s ] && echo yes || true", q(cfg.RemoteDir+"/current/"))); err == nil && strings.TrimSpace(out) == "yes" {
+			extra = append(extra, "--link-dest="+cfg.RemoteDir+"/current/")
 		}
-	} else if err := x.Remote("mkdir -p " + q(rel)); err != nil {
+	}
+	if err := x.UploadDir(x.WorkDir, rel, extra...); err != nil {
 		return err
 	}
-	if err := x.UploadDir(x.WorkDir, rel, "--checksum", "--delete"); err != nil {
-		return err
-	}
-	return x.Remote(fmt.Sprintf("test -f %s || { echo '上传后 %s 里没有 index.html' >&2; exit 1; }", q(rel+"/index.html"), rel))
+	return x.Remote(fmt.Sprintf("chmod -R u+rwX,go+rX %s && { test -f %s || { echo '上传后 %s 里没有 index.html' >&2; exit 1; }; }",
+		q(rel), q(rel+"/index.html"), rel))
 }
 
 // Activate 切换 current，Nginx 下一个请求就读新版本，不用重启。

@@ -123,10 +123,16 @@ func TestStaticPlan(t *testing.T) {
 		"跳过 *.map、dist.zip",
 		"/srv/www/shop.example.com/releases/main-a1b2c3d-20261107-1200",
 		"--resolve shop.example.com:443:127.0.0.1 https://shop.example.com/index.html | cmp -s - /srv/www/shop.example.com/current/index.html",
+		`curl -fsS -o /dev/null --max-time 5 --resolve shop.example.com:443:127.0.0.1 "https://shop.example.com$a"`,
+		"--link-dest=/srv/www/shop.example.com/current/",
+		"chmod -R u+rwX,go+rX /srv/www/shop.example.com/releases/main-a1b2c3d-20261107-1200",
 	} {
 		if !strings.Contains(cmds, want) {
 			t.Errorf("命令里缺少 %q\n%s", want, cmds)
 		}
+	}
+	if strings.Contains(cmds, "cp -al") {
+		t.Error("上传不能再用 cp -al 复制当前版本（rsync 改属性会改到共用 inode 的旧版本）")
 	}
 }
 
